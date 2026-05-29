@@ -2444,6 +2444,196 @@ const styleEl = document.createElement("style");
 styleEl.textContent = STYLES;
 document.head.appendChild(styleEl);
 
+function enablePoseStudioCanvasNavigationForwarding(root) {
+    if (!root || root._vnccsPoseCanvasNavigationForwarding) return;
+    root._vnccsPoseCanvasNavigationForwarding = true;
+
+    const canvas = () => app.canvasEl || app.canvas?.canvas || document.querySelector("canvas.litegraph");
+    let panning = false;
+
+    const markForwarded = (event) => {
+        Object.defineProperty(event, "_vnccsPoseForwardedCanvasInput", { value: true });
+        return event;
+    };
+
+    const cloneMouseEvent = (type, source, buttons = source.buttons) => markForwarded(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        button: source.button,
+        buttons,
+    }));
+
+    const clonePointerEvent = (type, source, buttons = source.buttons) => {
+        const EventCtor = window.PointerEvent || window.MouseEvent;
+        return markForwarded(new EventCtor(type, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            detail: source.detail,
+            screenX: source.screenX,
+            screenY: source.screenY,
+            clientX: source.clientX,
+            clientY: source.clientY,
+            ctrlKey: source.ctrlKey,
+            altKey: source.altKey,
+            shiftKey: source.shiftKey,
+            metaKey: source.metaKey,
+            button: 1,
+            buttons,
+            pointerId: source.pointerId || 1,
+            pointerType: source.pointerType || "mouse",
+            isPrimary: source.isPrimary !== false,
+        }));
+    };
+
+    const cloneWheelEvent = (source) => markForwarded(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        deltaX: source.deltaX,
+        deltaY: source.deltaY,
+        deltaZ: source.deltaZ,
+        deltaMode: source.deltaMode,
+    }));
+
+    const forwardMouse = (type, event, buttons) => {
+        const canvasEl = canvas();
+        if (!canvasEl) return false;
+        const pointerType = type === "mousedown" ? "pointerdown" : type === "mousemove" ? "pointermove" : "pointerup";
+        canvasEl.dispatchEvent(clonePointerEvent(pointerType, event, buttons));
+        canvasEl.dispatchEvent(cloneMouseEvent(type, event, buttons));
+        return true;
+    };
+
+    const forwardWheel = (event) => {
+        const canvasEl = canvas();
+        if (!canvasEl) return false;
+        canvasEl.dispatchEvent(cloneWheelEvent(event));
+        return true;
+    };
+
+    const hasOwnWheelHandler = (target) => {
+        for (let el = target; el && el !== root; el = el.parentElement) {
+            if (typeof el.onwheel === "function") return true;
+        }
+        return false;
+    };
+
+    const hasScrollableAncestor = (target) => {
+        for (let el = target; el && el !== root; el = el.parentElement) {
+            if (!(el instanceof HTMLElement)) continue;
+            const style = getComputedStyle(el);
+            const scrollY = /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1;
+            const scrollX = /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1;
+            if (scrollY || scrollX) return true;
+        }
+        return false;
+    };
+
+    const hasInteractiveTarget = (target) => {
+        if (!(target instanceof Element)) return true;
+        return Boolean(target.closest([
+            "button",
+            "input",
+            "textarea",
+            "select",
+            "label",
+            "a",
+            "canvas",
+            "[contenteditable='true']",
+            "[role='button']",
+            ".vnccs-ps-toggle",
+            ".vnccs-ps-slider-wrap",
+            ".vnccs-ps-tabs-shell",
+            ".vnccs-ps-canvas-wrap",
+            ".vnccs-ps-radar-wrap",
+            ".vnccs-ps-light-radar-wrap",
+            ".vnccs-ps-manager-grid",
+            ".vnccs-ps-manager-actions",
+            ".vnccs-ps-manager-detail-strip",
+            ".vnccs-ps-hand-popover",
+            ".vnccs-ps-settings-panel",
+            ".vnccs-ps-modal-overlay",
+            ".vnccs-ps-library-modal",
+            ".vnccs-ps-library-grid",
+            ".vnccs-ps-library-modal-grid",
+            ".vnccs-ps-library-inspector",
+        ].join(",")));
+    };
+
+    const canForwardFrom = (target) => {
+        if (hasInteractiveTarget(target)) return false;
+        if (hasOwnWheelHandler(target)) return false;
+        if (hasScrollableAncestor(target)) return false;
+        return true;
+    };
+
+    const finishPan = (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (!panning) return;
+        panning = false;
+        event.preventDefault();
+        event.stopPropagation();
+        forwardMouse("mouseup", event, 0);
+        window.removeEventListener("mousemove", movePan, true);
+        window.removeEventListener("mouseup", finishPan, true);
+    };
+
+    const movePan = (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (!panning) return;
+        event.preventDefault();
+        event.stopPropagation();
+        forwardMouse("mousemove", event, event.buttons || 4);
+    };
+
+    root.addEventListener("mousedown", (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (event.button !== 1) return;
+        if (!canForwardFrom(event.target)) return;
+        if (!forwardMouse("mousedown", event, 4)) return;
+        panning = true;
+        event.preventDefault();
+        event.stopPropagation();
+        window.addEventListener("mousemove", movePan, true);
+        window.addEventListener("mouseup", finishPan, true);
+    }, true);
+
+    root.addEventListener("auxclick", (event) => {
+        if (event.button !== 1) return;
+        if (!canForwardFrom(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+    }, true);
+
+    root.addEventListener("wheel", (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (!canForwardFrom(event.target)) return;
+        if (!forwardWheel(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+    }, { capture: true, passive: false });
+}
+
 
 // === 3D Viewer (from Debug3) ===
 class PoseStudioWidget {
@@ -2582,6 +2772,7 @@ class PoseStudioWidget {
     _createLayout() {
         this.container = document.createElement("div");
         this.container.className = "vnccs-pose-studio";
+        enablePoseStudioCanvasNavigationForwarding(this.container);
 
         this.leftPanel = document.createElement("div");
         this.leftPanel.className = "vnccs-ps-left";
@@ -2687,20 +2878,6 @@ class PoseStudioWidget {
             meshSection.content.appendChild(this.createManagerSlider(def, "mesh"));
         });
         sidebar.appendChild(meshSection.el);
-
-        const genderSection = this.createSection("Gender Settings", true);
-        [
-            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01, gender: "female" },
-            { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, gender: "female" },
-            { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01, gender: "male" },
-            { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, gender: "male" },
-            { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01, gender: "male" }
-        ].forEach((def) => {
-            const field = this.createManagerSlider(def, "mesh");
-            this.managerGenderFields[def.key] = { field, gender: def.gender };
-            genderSection.content.appendChild(field);
-        });
-        sidebar.appendChild(genderSection.el);
 
         const cameraSection = this.createSection("Camera", true);
         const dimRow = document.createElement("div");
@@ -3011,7 +3188,6 @@ class PoseStudioWidget {
 
         // --- GENDER SETTINGS SECTION ---
         const genderSection = this.createSection("Gender Settings", true);
-        genderSection.el.classList.add("vnccs-ps-main-moved-manager");
         this.genderFields = {};
 
         const femaleSliders = [
@@ -3586,6 +3762,7 @@ class PoseStudioWidget {
         const normalized = mode === "manager" || mode === "managerDetail" ? mode : "studio";
         this.interfaceMode = normalized;
         this.exportParams.interface_mode = normalized === "studio" ? "studio" : "manager";
+        this.node?._vnccsSetPoseImageInputDisabled?.(normalized !== "studio");
         this.applyInterfaceMode();
         if (normalized === "manager") {
             this.refreshPoseManagerControls();
@@ -4208,6 +4385,75 @@ class PoseStudioWidget {
         return field;
     }
 
+    getCanvasPointerPoint(canvas, event) {
+        const style = getComputedStyle(canvas);
+        const layoutW = Number.parseFloat(style.width) || canvas.offsetWidth || canvas.width;
+        const layoutH = Number.parseFloat(style.height) || canvas.offsetHeight || canvas.height;
+        const rect = canvas.getBoundingClientRect();
+        const hasOffset = event.target === canvas
+            && Number.isFinite(event.offsetX)
+            && Number.isFinite(event.offsetY)
+            && layoutW > 0
+            && layoutH > 0;
+
+        const rectScaleX = canvas.width / Math.max(rect.width || 1, 1);
+        const rectScaleY = canvas.height / Math.max(rect.height || 1, 1);
+        const rectPoint = {
+            x: (event.clientX - rect.left) * rectScaleX,
+            y: (event.clientY - rect.top) * rectScaleY,
+        };
+        const offsetPoint = hasOffset
+            ? {
+                x: event.offsetX * (canvas.width / layoutW),
+                y: event.offsetY * (canvas.height / layoutH),
+            }
+            : null;
+
+        if (window.VNCCS_POSE_RADAR_DEBUG) {
+            console.log("[VNCCS Pose Studio] radar pointer", {
+                source: "rect",
+                point: rectPoint,
+                rectPoint,
+                offsetPoint,
+                eventType: event.type,
+                pointerType: event.pointerType,
+                client: { x: event.clientX, y: event.clientY },
+                offset: { x: event.offsetX, y: event.offsetY },
+                rect: {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                },
+                layout: {
+                    width: layoutW,
+                    height: layoutH,
+                    offsetWidth: canvas.offsetWidth,
+                    offsetHeight: canvas.offsetHeight,
+                    styleWidth: style.width,
+                    styleHeight: style.height,
+                    canvasWidth: canvas.width,
+                    canvasHeight: canvas.height,
+                },
+                uiScale: this.container
+                    ? getComputedStyle(this.container).getPropertyValue("--vnccs-ps-ui-scale")
+                    : null,
+                devicePixelRatio: window.devicePixelRatio,
+                visualViewport: window.visualViewport
+                    ? {
+                        scale: window.visualViewport.scale,
+                        offsetLeft: window.visualViewport.offsetLeft,
+                        offsetTop: window.visualViewport.offsetTop,
+                        width: window.visualViewport.width,
+                        height: window.visualViewport.height,
+                    }
+                    : null,
+            });
+        }
+
+        return rectPoint;
+    }
+
     createCameraRadar(section) {
         const wrap = document.createElement("div");
         wrap.className = "vnccs-ps-radar-wrap";
@@ -4228,6 +4474,7 @@ class PoseStudioWidget {
         canvas.style.width = "140px";
         canvas.style.height = "140px";
         canvas.style.cursor = "crosshair";
+        canvas.style.touchAction = "none";
 
         const ctx = canvas.getContext("2d");
 
@@ -4237,13 +4484,9 @@ class PoseStudioWidget {
         const range = 20.0; // Max offset range (+/- 20)
 
         const updateFromMouse = (e) => {
-            const rect = canvas.getBoundingClientRect();
-            // Scaling support
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-
-            const mouseX = (e.clientX - rect.left) * scaleX;
-            const mouseY = (e.clientY - rect.top) * scaleY;
+            const pointer = this.getCanvasPointerPoint(canvas, e);
+            const mouseX = pointer.x;
+            const mouseY = pointer.y;
 
             // Aspect Ratio Logic to find active area
             const viewW = this.exportParams.view_width || 1024;
@@ -4305,21 +4548,27 @@ class PoseStudioWidget {
             this.applyCameraToViewer(true);
         };
 
-        canvas.addEventListener("mousedown", (e) => {
+        canvas.addEventListener("pointerdown", (e) => {
+            canvas.setPointerCapture(e.pointerId);
             isDragging = true;
             updateFromMouse(e);
         });
 
-        document.addEventListener("mousemove", (e) => {
+        canvas.addEventListener("pointermove", (e) => {
             if (isDragging) updateFromMouse(e);
         });
 
-        document.addEventListener("mouseup", () => {
+        const finishDrag = (e) => {
             if (isDragging) {
+                if (e && canvas.hasPointerCapture(e.pointerId)) {
+                    canvas.releasePointerCapture(e.pointerId);
+                }
                 isDragging = false;
                 this.syncToNode(false);
             }
-        });
+        };
+        canvas.addEventListener("pointerup", finishDrag);
+        canvas.addEventListener("pointercancel", finishDrag);
 
         const draw = () => {
             // Clear
@@ -4520,12 +4769,9 @@ class PoseStudioWidget {
         };
 
         const updateFromMouse = (e) => {
-            const rect = canvas.getBoundingClientRect();
-            // Scaling support (accounts for CSS zoom)
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            const mouseX = (e.clientX - rect.left) * scaleX;
-            const mouseY = (e.clientY - rect.top) * scaleY;
+            const pointer = this.getCanvasPointerPoint(canvas, e);
+            const mouseX = pointer.x;
+            const mouseY = pointer.y;
             const cx = size / 2;
             const cy = size / 2;
 
@@ -8914,6 +9160,25 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
         if (nodeData.name !== "VNCCS_PoseStudio") return;
 
+        const setPoseImageInputDisabled = (node, disabled) => {
+            if (!node) return;
+            const inputIndex = node.inputs?.findIndex(input => input?.name === "pose_image") ?? -1;
+            if (disabled) {
+                if (inputIndex >= 0) {
+                    if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
+                    if (typeof node.removeInput === "function") node.removeInput(inputIndex);
+                    else node.inputs.splice(inputIndex, 1);
+                }
+                node._vnccsPoseImageInputDisabled = true;
+                return;
+            }
+
+            if (inputIndex < 0 && typeof node.addInput === "function") {
+                node.addInput("pose_image", "IMAGE");
+            }
+            node._vnccsPoseImageInputDisabled = false;
+        };
+
         const syncStudioDOMWidgetWidth = (node) => {
             const widget = node?.widgets?.find(w => w.name === "pose_studio_ui");
             const nodeWidth = Number(node?.size?.[0]);
@@ -8944,6 +9209,7 @@ app.registerExtension({
 
             // Create widget
             this.studioWidget = new PoseStudioWidget(this);
+            this._vnccsSetPoseImageInputDisabled = (disabled) => setPoseImageInputDisabled(this, disabled);
 
             const studioDOMWidget = this.addDOMWidget("pose_studio_ui", "ui", this.studioWidget.container, {
                 serialize: false,
@@ -8977,6 +9243,7 @@ app.registerExtension({
             // Load model after initialization
             setTimeout(() => {
                 this.studioWidget.loadFromNode();
+                this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
                 window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                 this.studioWidget.loadModel().then(() => {
                     if (this.studioWidget.viewer) {
@@ -9013,6 +9280,7 @@ app.registerExtension({
                 setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
                     this.studioWidget.loadFromNode();
+                    this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
                     window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
